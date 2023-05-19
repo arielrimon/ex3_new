@@ -6,13 +6,16 @@
 #include "MapReduceFramework.h"
 #include "Barrier.h"
 
+
+///------------------------------ STRUCTS -----------------------------------------
+
 struct JobContext { // resources used by all threads - every thread hold a pointer
     std::vector<IntermediateVec *> *all_intermediate_vec;
     std::vector<IntermediateVec *> *shuffled_intermediate_vec;
     JobState *job_state;
     const MapReduceClient *client;
     OutputVec *output_vec;
-    std::mutex* end_map_stage_mutex; //todo: fix
+    std::mutex *end_map_stage_mutex; //todo: fix
     std::atomic<int> *map_atomic_counter;
     std::atomic<int> *reduce_atomic_counter;
     Barrier *barrier;
@@ -25,10 +28,12 @@ struct ThreadContext {
     IntermediateVec *intermediate_vec;
 };
 
+///------------------------------ FUNCTIONS USED -----------------------------------------
+
 JobState *get_new_job_state();
 
 ThreadContext *init_thread_contexts(OutputVec &outputVec, int multiThreadLevel, const MapReduceClient &client,
-                                    const InputVec &inputVec, JobState *job_state, JobContext * job_context);
+                                    const InputVec &inputVec, JobState *job_state, JobContext *job_context);
 
 bool compare(const IntermediatePair &a, const IntermediatePair &b) {
     return *(a.first) < *(b.first);
@@ -95,23 +100,36 @@ pop_all_max_keys(K2 *max_key, IntermediateVec *intermediateVecOutput, std::vecto
 }
 
 
+/**
+ * frees the vec alloc when empty, and returns true. otherwise false without free
+ * @param intermediate_vec out of all vectors - to be freed when empty
+ * @return true if it was empty, otherwise false (without deleting)
+ */
 bool free_if_empty(const IntermediateVec *intermediate_vec) {
-    //frees the vec alloc when empty, and returns true. otherwise false without free
     bool flag = intermediate_vec->empty();
     if (flag) {
-        delete intermediate_vec;
+        delete intermediate_vec; //only if empty!
     }
     return flag;
 }
 
+/**
+ * Remove empty vectors of all vectors
+ * @param all_vectors after sort phase
+ */
 void remove_empty_vectors(std::vector<IntermediateVec *> *all_vectors) {
-    // Remove empty vectors
-    all_vectors->erase(std::remove_if(all_vectors->begin(), all_vectors->end(),
-                                      [](const IntermediateVec *intermediate_vec) {
-                                          return free_if_empty(intermediate_vec);
-                                      }), all_vectors->end());
+    all_vectors->erase(
+            std::remove_if(all_vectors->begin(), all_vectors->end(),
+                           [](const IntermediateVec *intermediate_vec) {
+                               return free_if_empty(intermediate_vec);
+                           }), all_vectors->end());
 }
 
+/**
+ * goes over all vectors and checks only at the back cell for max value (as the cells are sorted)
+ * @param all_vectors after sort phase
+ * @return value of the maximal key found
+ */
 K2 *get_max_key(std::vector<IntermediateVec *> *all_vectors) {
     K2 *max_key = (K2 *) malloc(sizeof(K2));
     bool is_first_iteration = true;
@@ -126,11 +144,61 @@ K2 *get_max_key(std::vector<IntermediateVec *> *all_vectors) {
     return max_key;
 }
 
-JobContext *init_job_context(OutputVec &outputVec, const MapReduceClient &client, JobState *job_state,
-//                             std::atomic<int> *map_atomic_counter,std::atomic<int> *reduce_atomic_counter,
-//                             std::vector<IntermediateVec *> *all_vectors,
-//                             std::vector<IntermediateVec *> *shuffled_intermediate_vec,
-                             int numOfThreads);
+JobContext *
+init_job_context(OutputVec &outputVec, const MapReduceClient &client, JobState *job_state, int numOfThreads);
+void init_thread_context(const InputVec &inputVec, ThreadContext *thread_context, JobContext *job_context, int i);
+
+ThreadContext *init_thread_contexts(OutputVec &outputVec, int multiThreadLevel, const MapReduceClient &client,
+                                    const InputVec &inputVec, JobState *job_state, JobContext *job_context) {
+    auto *thread_contexts = (ThreadContext *) malloc(multiThreadLevel * sizeof(ThreadContext));
+
+    for (int i = 0; i < multiThreadLevel; ++i) {
+        init_thread_context(inputVec, thread_contexts + i, job_context, i);
+    }
+    return thread_contexts;
+}
+
+void init_thread_context(const InputVec &inputVec, ThreadContext *thread_context,
+                         JobContext *job_context, const int i) {
+    thread_context->thread_id = i;
+    thread_context->job_context = job_context;
+    thread_context->input_vec = &inputVec;
+    thread_context->intermediate_vec = new IntermediateVec();
+    job_context->all_intermediate_vec->push_back(thread_context->intermediate_vec);
+}
+
+JobContext *
+init_job_context(OutputVec &outputVec, const MapReduceClient &client, JobState *job_state, int numOfThreads) {
+    // called only once as the resources are same for all threads
+    auto *map_atomic_counter = (std::atomic<int> *) malloc(sizeof(std::atomic<int>));
+    map_atomic_counter->store(0);
+    auto *reduce_atomic_counter = (std::atomic<int> *) malloc(sizeof(std::atomic<int>));
+    reduce_atomic_counter->store(0);
+    auto *all_vectors = new std::vector<IntermediateVec *>();
+    auto *shuffled_intermediate_vec = new std::vector<IntermediateVec *>();
+    auto *job_context = (JobContext *) malloc(sizeof(JobContext));
+
+    job_context->client = &client;
+    job_context->all_intermediate_vec = all_vectors;
+    job_context->shuffled_intermediate_vec = shuffled_intermediate_vec;
+    job_context->output_vec = &outputVec;
+    job_context->end_map_stage_mutex = (std::mutex *) malloc(sizeof(std::mutex));
+    job_context->job_state = job_state;
+    job_context->barrier = new Barrier(numOfThreads);
+    job_context->map_atomic_counter = map_atomic_counter;
+    job_context->reduce_atomic_counter = reduce_atomic_counter;
+    return job_context;
+}
+
+JobState *get_new_job_state() {
+    auto *job = (JobState *) malloc(sizeof(JobState));
+    job->stage = UNDEFINED_STAGE;
+    job->percentage = 0;
+    return job;
+}
+
+
+///------------------------------ LIBRARY -----------------------------------------
 
 /**
  * starts running the MapReduce algorithm (w several threads) and returns a job handler
@@ -149,9 +217,10 @@ startMapReduceJob(const MapReduceClient &client, const InputVec &inputVec, Outpu
     pthread_t threads[multiThreadLevel];
     JobState *job_state = get_new_job_state();
     // NOTICE: I changed it so we build it only once and every thread gets a pointer of it! works the same!
-    JobContext *job_context = init_job_context(outputVec, client, job_state,multiThreadLevel);
+    JobContext *job_context = init_job_context(outputVec, client, job_state, multiThreadLevel);
 
-    ThreadContext *thread_contexts = init_thread_contexts(outputVec, multiThreadLevel, client, inputVec, job_state, job_context);
+    ThreadContext *thread_contexts = init_thread_contexts(outputVec, multiThreadLevel, client, inputVec, job_state,
+                                                          job_context);
     for (int i = 0; i < multiThreadLevel; ++i) {
         pthread_create(threads + i, nullptr, map_reduce_method, thread_contexts + i);
     }
@@ -168,55 +237,8 @@ startMapReduceJob(const MapReduceClient &client, const InputVec &inputVec, Outpu
     return static_cast<JobHandle>(job_state);
 }
 
-void init_thread_context(const InputVec &inputVec, ThreadContext *thread_context,
-                         JobContext *job_context, int i);
 
-ThreadContext *init_thread_contexts(OutputVec &outputVec, int multiThreadLevel, const MapReduceClient &client,
-                                    const InputVec &inputVec, JobState *job_state, JobContext * job_context) {
-    auto *thread_contexts = (ThreadContext *) malloc(multiThreadLevel * sizeof(ThreadContext));
 
-    for (int i = 0; i < multiThreadLevel; ++i) {
-        init_thread_context(inputVec, thread_contexts + i, job_context, i);
-    }
-    return thread_contexts;
-}
-
-void init_thread_context(const InputVec &inputVec, ThreadContext *thread_context,
-                         JobContext *job_context, const int i) {
-    thread_context->thread_id = i;
-    thread_context->job_context = job_context;
-    thread_context->input_vec = &inputVec;
-    thread_context->intermediate_vec = new IntermediateVec();
-    job_context->all_intermediate_vec->push_back(thread_context->intermediate_vec);
-}
-
-JobContext *init_job_context(OutputVec &outputVec, const MapReduceClient &client, JobState *job_state, int numOfThreads) {
-    auto *map_atomic_counter = (std::atomic<int> *) malloc(sizeof(std::atomic<int>));
-    map_atomic_counter->store(0);
-    auto *reduce_atomic_counter = (std::atomic<int> *) malloc(sizeof(std::atomic<int>));
-    reduce_atomic_counter->store(0);
-    auto *all_vectors = new std::vector<IntermediateVec *>();
-    auto *shuffled_intermediate_vec = new std::vector<IntermediateVec *>();
-    auto *job_context = (JobContext *) malloc(sizeof(JobContext));
-
-    job_context->client = &client;
-    job_context->all_intermediate_vec = all_vectors;
-    job_context->shuffled_intermediate_vec = shuffled_intermediate_vec;
-    job_context->output_vec = &outputVec;
-    job_context->end_map_stage_mutex = (std::mutex*)malloc(sizeof(std::mutex));
-    job_context->job_state = job_state;
-    job_context->barrier = new Barrier(numOfThreads);
-    job_context->map_atomic_counter = map_atomic_counter;
-    job_context->reduce_atomic_counter = reduce_atomic_counter;
-    return job_context;
-}
-
-JobState *get_new_job_state() {
-    auto *job = (JobState *) malloc(sizeof(JobState));
-    job->stage = UNDEFINED_STAGE;
-    job->percentage = 0;
-    return job;
-}
 
 
 /**
@@ -225,7 +247,7 @@ JobState *get_new_job_state() {
  * @param state JobState struct to update the job to
  */
 void getJobState(JobHandle job, JobState *state) {
-    auto job_state = (JobState*)(job);
+    auto job_state = (JobState *) (job);
     state->stage = job_state->stage;
     state->percentage = job_state->percentage;
 }
