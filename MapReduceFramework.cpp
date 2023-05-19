@@ -6,13 +6,13 @@
 #include "MapReduceFramework.h"
 #include "Barrier.h"
 
-struct JobContext {
+struct JobContext { // resources used by all threads - every thread hold a pointer
     std::vector<IntermediateVec *> *all_intermediate_vec;
     std::vector<IntermediateVec *> *shuffled_intermediate_vec;
     JobState *job_state;
     const MapReduceClient *client;
     OutputVec *output_vec;
-    std::mutex* end_map_stage_mutex;
+    std::mutex* end_map_stage_mutex; //todo: fix
     std::atomic<int> *map_atomic_counter;
     std::atomic<int> *reduce_atomic_counter;
     Barrier *barrier;
@@ -21,14 +21,14 @@ struct JobContext {
 struct ThreadContext {
     int thread_id;
     const InputVec *input_vec;
-    JobContext *job_context;
+    JobContext *job_context; // JobContext of all threads
     IntermediateVec *intermediate_vec;
 };
 
 JobState *get_new_job_state();
 
 ThreadContext *init_thread_contexts(OutputVec &outputVec, int multiThreadLevel, const MapReduceClient &client,
-                                    const InputVec &inputVec, JobState *job_state);
+                                    const InputVec &inputVec, JobState *job_state, JobContext * job_context);
 
 bool compare(const IntermediatePair &a, const IntermediatePair &b) {
     return *(a.first) < *(b.first);
@@ -55,7 +55,7 @@ void *map_reduce_method(void *context) {
     std::sort(tc->intermediate_vec->begin(), tc->intermediate_vec->end(), compare);
     tc->job_context->barrier->barrier();
 
-        //Shuffle
+    //Shuffle
     tc->job_context->job_state->stage = SHUFFLE_STAGE;
     if (tc->thread_id == 0) {
         std::vector<IntermediateVec *> *all_intermediate_vec = tc->job_context->all_intermediate_vec;
@@ -126,6 +126,12 @@ K2 *get_max_key(std::vector<IntermediateVec *> *all_vectors) {
     return max_key;
 }
 
+JobContext *init_job_context(OutputVec &outputVec, const MapReduceClient &client, JobState *job_state,
+//                             std::atomic<int> *map_atomic_counter,std::atomic<int> *reduce_atomic_counter,
+//                             std::vector<IntermediateVec *> *all_vectors,
+//                             std::vector<IntermediateVec *> *shuffled_intermediate_vec,
+                             int numOfThreads);
+
 /**
  * starts running the MapReduce algorithm (w several threads) and returns a job handler
  * You can assume that the input to this function is valid
@@ -142,8 +148,10 @@ JobHandle
 startMapReduceJob(const MapReduceClient &client, const InputVec &inputVec, OutputVec &outputVec, int multiThreadLevel) {
     pthread_t threads[multiThreadLevel];
     JobState *job_state = get_new_job_state();
+    // NOTICE: I changed it so we build it only once and every thread gets a pointer of it! works the same!
+    JobContext *job_context = init_job_context(outputVec, client, job_state,multiThreadLevel);
 
-    ThreadContext *thread_contexts = init_thread_contexts(outputVec, multiThreadLevel, client, inputVec, job_state);
+    ThreadContext *thread_contexts = init_thread_contexts(outputVec, multiThreadLevel, client, inputVec, job_state, job_context);
     for (int i = 0; i < multiThreadLevel; ++i) {
         pthread_create(threads + i, nullptr, map_reduce_method, thread_contexts + i);
     }
@@ -160,26 +168,12 @@ startMapReduceJob(const MapReduceClient &client, const InputVec &inputVec, Outpu
     return static_cast<JobHandle>(job_state);
 }
 
-JobContext *init_job_context(OutputVec &outputVec, const MapReduceClient &client, JobState *job_state,
-                             std::atomic<int> *map_atomic_counter,std::atomic<int> *reduce_atomic_counter,
-                             std::vector<IntermediateVec *> *all_vectors,
-                             std::vector<IntermediateVec *> *shuffled_intermediate_vec, int numOfThreads);
-
 void init_thread_context(const InputVec &inputVec, ThreadContext *thread_context,
                          JobContext *job_context, int i);
 
 ThreadContext *init_thread_contexts(OutputVec &outputVec, int multiThreadLevel, const MapReduceClient &client,
-                                    const InputVec &inputVec, JobState *job_state) {
-    auto *map_atomic_counter = (std::atomic<int> *) malloc(sizeof(std::atomic<int>));
-    map_atomic_counter->store(0);
-    auto *reduce_atomic_counter = (std::atomic<int> *) malloc(sizeof(std::atomic<int>));
-    reduce_atomic_counter->store(0);
+                                    const InputVec &inputVec, JobState *job_state, JobContext * job_context) {
     auto *thread_contexts = (ThreadContext *) malloc(multiThreadLevel * sizeof(ThreadContext));
-    auto *all_vectors = new std::vector<IntermediateVec *>();
-    auto *shuffled_intermediate_vec = new std::vector<IntermediateVec *>();
-    JobContext *job_context = init_job_context(outputVec, client, job_state, map_atomic_counter,reduce_atomic_counter, all_vectors,
-                                               shuffled_intermediate_vec,
-                                               multiThreadLevel);
 
     for (int i = 0; i < multiThreadLevel; ++i) {
         init_thread_context(inputVec, thread_contexts + i, job_context, i);
@@ -196,11 +190,15 @@ void init_thread_context(const InputVec &inputVec, ThreadContext *thread_context
     job_context->all_intermediate_vec->push_back(thread_context->intermediate_vec);
 }
 
-JobContext *init_job_context(OutputVec &outputVec, const MapReduceClient &client, JobState *job_state,
-                             std::atomic<int> *map_atomic_counter,std::atomic<int> *reduce_atomic_counter,
-                             std::vector<IntermediateVec *> *all_vectors, std::vector<IntermediateVec *> *shuffled_intermediate_vec,
-                             int numOfThreads) {
+JobContext *init_job_context(OutputVec &outputVec, const MapReduceClient &client, JobState *job_state, int numOfThreads) {
+    auto *map_atomic_counter = (std::atomic<int> *) malloc(sizeof(std::atomic<int>));
+    map_atomic_counter->store(0);
+    auto *reduce_atomic_counter = (std::atomic<int> *) malloc(sizeof(std::atomic<int>));
+    reduce_atomic_counter->store(0);
+    auto *all_vectors = new std::vector<IntermediateVec *>();
+    auto *shuffled_intermediate_vec = new std::vector<IntermediateVec *>();
     auto *job_context = (JobContext *) malloc(sizeof(JobContext));
+
     job_context->client = &client;
     job_context->all_intermediate_vec = all_vectors;
     job_context->shuffled_intermediate_vec = shuffled_intermediate_vec;
