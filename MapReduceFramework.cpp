@@ -30,20 +30,32 @@ struct ThreadContext {
 
 ///------------------------------ FUNCTIONS USED -----------------------------------------
 
+// init funcs
 JobState *get_new_job_state();
-
 ThreadContext *init_thread_contexts(OutputVec &outputVec, int multiThreadLevel, const MapReduceClient &client,
                                     const InputVec &inputVec, JobState *job_state, JobContext *job_context);
+void init_thread_context(const InputVec &inputVec, ThreadContext *thread_context, JobContext *job_context, int i);
+JobContext *
+init_job_context(OutputVec &outputVec, const MapReduceClient &client, JobState *job_state, int numOfThreads);
 
+// helpers for shuffle funcs
+K2 *get_max_key(std::vector<IntermediateVec *> *all_vectors);
+void
+pop_all_max_keys(K2 *max_key, IntermediateVec *intermediateVecOutput, std::vector<IntermediateVec *> *all_vec_input);
+void remove_empty_vectors(std::vector<IntermediateVec *> *all_vectors);
+
+
+/**
+ *
+ * @param a IntermediatePair
+ * @param b IntermediatePair
+ * @return true if (key in a) < (key in b)
+ */
 bool compare(const IntermediatePair &a, const IntermediatePair &b) {
     return *(a.first) < *(b.first);
 }
 
-K2 *get_max_key(std::vector<IntermediateVec *> *all_vectors);
-
-void
-pop_all_max_keys(K2 *max_key, IntermediateVec *intermediateVecOutput, std::vector<IntermediateVec *> *all_vec_input);
-
+// map reduce
 void *map_reduce_method(void *context) {
     auto *tc = (ThreadContext *) context;
 
@@ -85,12 +97,35 @@ void *map_reduce_method(void *context) {
     return tc->job_context->job_state;
 }
 
-void remove_empty_vectors(std::vector<IntermediateVec *> *intermediate_vec);
+/**
+ * goes over all vectors and checks only at the back cell for max value (as the cells are sorted)
+ * @param all_vectors after sort phase
+ * @return value of the maximal key found
+ */
+K2 *get_max_key(std::vector<IntermediateVec *> *all_vectors) {
+    K2 *max_key = (K2 *) malloc(sizeof(K2));
+    bool is_first_iteration = true;
+    for (auto vec: *all_vectors) {
+        if (is_first_iteration) {
+            max_key = vec->back().first;
+            is_first_iteration = false;
+            continue;
+        }
+        max_key = std::max(max_key, vec->back().first);
+    }
+    return max_key;
+}
 
+/**
+ *
+ * @param max_key found after going over all vec.back()
+ * @param intermediateVecOutput the output vector to place the result
+ * @param all_vec_input all vectors
+ */
 void
 pop_all_max_keys(K2 *max_key, IntermediateVec *intermediateVecOutput, std::vector<IntermediateVec *> *all_vec_input) {
     for (auto vec: *all_vec_input) {
-        while (vec->back().first == max_key) {
+        while (vec->back().first == max_key) { // goes over the vector backwards as long as it equals the max_key
             intermediateVecOutput->push_back(vec->back());
             vec->pop_back();
         }
@@ -98,7 +133,6 @@ pop_all_max_keys(K2 *max_key, IntermediateVec *intermediateVecOutput, std::vecto
     //after finishing emptying every vector from max_key pairs - going over and deleting all empty vectors
     remove_empty_vectors(all_vec_input);
 }
-
 
 /**
  * frees the vec alloc when empty, and returns true. otherwise false without free
@@ -126,28 +160,15 @@ void remove_empty_vectors(std::vector<IntermediateVec *> *all_vectors) {
 }
 
 /**
- * goes over all vectors and checks only at the back cell for max value (as the cells are sorted)
- * @param all_vectors after sort phase
- * @return value of the maximal key found
+ *
+ * @param outputVec
+ * @param multiThreadLevel num of threads to create
+ * @param client
+ * @param inputVec
+ * @param job_state
+ * @param job_context shared resources
+ * @return
  */
-K2 *get_max_key(std::vector<IntermediateVec *> *all_vectors) {
-    K2 *max_key = (K2 *) malloc(sizeof(K2));
-    bool is_first_iteration = true;
-    for (auto vec: *all_vectors) {
-        if (is_first_iteration) {
-            max_key = vec->back().first;
-            is_first_iteration = false;
-            continue;
-        }
-        max_key = std::max(max_key, vec->back().first);
-    }
-    return max_key;
-}
-
-JobContext *
-init_job_context(OutputVec &outputVec, const MapReduceClient &client, JobState *job_state, int numOfThreads);
-void init_thread_context(const InputVec &inputVec, ThreadContext *thread_context, JobContext *job_context, int i);
-
 ThreadContext *init_thread_contexts(OutputVec &outputVec, int multiThreadLevel, const MapReduceClient &client,
                                     const InputVec &inputVec, JobState *job_state, JobContext *job_context) {
     auto *thread_contexts = (ThreadContext *) malloc(multiThreadLevel * sizeof(ThreadContext));
@@ -158,6 +179,13 @@ ThreadContext *init_thread_contexts(OutputVec &outputVec, int multiThreadLevel, 
     return thread_contexts;
 }
 
+/**
+ *
+ * @param inputVec of all pairs before map phase
+ * @param thread_context
+ * @param job_context pointer to shared resources
+ * @param i index in threads
+ */
 void init_thread_context(const InputVec &inputVec, ThreadContext *thread_context,
                          JobContext *job_context, const int i) {
     thread_context->thread_id = i;
@@ -167,9 +195,18 @@ void init_thread_context(const InputVec &inputVec, ThreadContext *thread_context
     job_context->all_intermediate_vec->push_back(thread_context->intermediate_vec);
 }
 
+/**
+ *
+ * @param outputVec
+ * @param client
+ * @param job_state
+ * @param numOfThreads
+ * @return pointer to JobContext obj that holds all resources for all threads
+ */
 JobContext *
 init_job_context(OutputVec &outputVec, const MapReduceClient &client, JobState *job_state, int numOfThreads) {
     // called only once as the resources are same for all threads
+    //allocation of all resources
     auto *map_atomic_counter = (std::atomic<int> *) malloc(sizeof(std::atomic<int>));
     map_atomic_counter->store(0);
     auto *reduce_atomic_counter = (std::atomic<int> *) malloc(sizeof(std::atomic<int>));
@@ -178,6 +215,7 @@ init_job_context(OutputVec &outputVec, const MapReduceClient &client, JobState *
     auto *shuffled_intermediate_vec = new std::vector<IntermediateVec *>();
     auto *job_context = (JobContext *) malloc(sizeof(JobContext));
 
+    // placing all resources in the JobContext obj
     job_context->client = &client;
     job_context->all_intermediate_vec = all_vectors;
     job_context->shuffled_intermediate_vec = shuffled_intermediate_vec;
@@ -190,6 +228,10 @@ init_job_context(OutputVec &outputVec, const MapReduceClient &client, JobState *
     return job_context;
 }
 
+/**
+ *
+ * @return JobState obj where stage = UNDEFINED_STAGE
+ */
 JobState *get_new_job_state() {
     auto *job = (JobState *) malloc(sizeof(JobState));
     job->stage = UNDEFINED_STAGE;
@@ -228,6 +270,7 @@ startMapReduceJob(const MapReduceClient &client, const InputVec &inputVec, Outpu
     for (int i = 0; i < multiThreadLevel; ++i) {
         pthread_join(threads[i], nullptr);
     }
+
     int counter = 0;
     for (const auto &pair: inputVec) {
         client.map(pair.first, pair.second, thread_contexts + counter);
@@ -236,10 +279,6 @@ startMapReduceJob(const MapReduceClient &client, const InputVec &inputVec, Outpu
 
     return static_cast<JobHandle>(job_state);
 }
-
-
-
-
 
 /**
  * gets a JobHandle and updates the state of the job into the given JobState struct
@@ -274,7 +313,6 @@ void emit2(K2 *key, V2 *value, void *context) {
     IntermediatePair pair = IntermediatePair(key, value);
     tc->intermediate_vec->push_back(pair);
 }
-
 
 /**
  * produces a (K3*, V3*) pair.
