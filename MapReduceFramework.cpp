@@ -8,17 +8,63 @@
 
 
 ///------------------------------ STRUCTS -----------------------------------------
+struct JobHandleObject{
+    JobHandleObject(JobState *job_state, pthread_t *threads, int number_of_threads) {
+    this->job_state =job_state;
+    this->threads = threads;
+    this->number_of_threads = number_of_threads;
+    this->flag.store(0);
+    }
+
+    JobState* job_state;
+    std::atomic<int> flag;
+    pthread_t* threads;
+    std::mutex wait_mutex;
+    int number_of_threads;
+
+    void activate_flag()
+    {
+        this->flag.store(1);
+    }
+
+    bool get_flag()
+    {
+        return this->flag.load();
+    }
+};
 
 struct JobContext { // resources used by all threads - every thread hold a pointer
+    pthread_t* threads;
+    JobState *job_state;
+    int number_of_threads;
     std::vector<IntermediateVec *> *all_intermediate_vec;
     std::vector<IntermediateVec *> *shuffled_intermediate_vec;
-    JobState *job_state;
     const MapReduceClient *client;
     OutputVec *output_vec;
     std::mutex *end_map_stage_mutex; //todo: fix
     std::atomic<int> *map_atomic_counter;
     std::atomic<int> *reduce_atomic_counter;
     Barrier *barrier;
+    std::atomic<int> flag;
+    std::mutex wait_mutex;
+//
+//
+//    JobContext(JobState *job_state, pthread_t *threads, int number_of_threads) {
+//        this->job_state =job_state;
+//        this->threads = threads;
+//        this->number_of_threads = number_of_threads;
+//        this->flag.store(0);
+//        this->client = &client;
+//        this->all_intermediate_vec = all_vectors;
+//        this->shuffled_intermediate_vec = shuffled_intermediate_vec;
+//        this->output_vec = &outputVec;
+//        this->end_map_stage_mutex = (std::mutex *) malloc(sizeof(std::mutex));
+//        this->job_state = job_state;
+//        this->barrier = new Barrier(numOfThreads);
+//        this->map_atomic_counter = map_atomic_counter;
+//        this->reduce_atomic_counter = reduce_atomic_counter;
+//    }
+
 };
 
 struct ThreadContext {
@@ -45,6 +91,8 @@ pop_all_max_keys(K2 *max_key, IntermediateVec *intermediateVecOutput, std::vecto
                  ThreadContext *pContext);
 void remove_empty_vectors(std::vector<IntermediateVec *> *all_vectors, ThreadContext *pContext);
 
+
+void release_all_resources(JobHandle job_handle);
 
 /**
  *
@@ -279,17 +327,15 @@ startMapReduceJob(const MapReduceClient &client, const InputVec &inputVec, Outpu
 //        pthread_create(threads + i, nullptr, map_reduce_method, thread_contexts + i);
 //    }
 //
-//    for (int i = 0; i < multiThreadLevel; ++i) {
-//        pthread_join(threads[i], nullptr);
-//    }
+
 //
 //    int counter = 0;
 //    for (const auto &pair: inputVec) {
 //        client.map(pair.first, pair.second, thread_contexts + counter);
 //        counter++;
 //    }
-
-    return static_cast<JobHandle>(job_state);
+    auto* job_handle_object = new JobHandleObject(job_state, threads, multiThreadLevel);
+    return static_cast<JobHandle>(job_handle_object);
 }
 
 /**
@@ -298,9 +344,9 @@ startMapReduceJob(const MapReduceClient &client, const InputVec &inputVec, Outpu
  * @param state JobState struct to update the job to
  */
 void getJobState(JobHandle job, JobState *state) {
-    auto job_state = (JobState *) (job);
-    state->stage = job_state->stage;
-    state->percentage = job_state->percentage;
+    auto* job_handle_object = static_cast<JobHandleObject*>(job);
+    state->stage = job_handle_object->job_state->stage;
+    state->percentage =  job_handle_object->job_state->percentage;
 }
 
 /**
@@ -310,7 +356,12 @@ void getJobState(JobHandle job, JobState *state) {
  * @param job JobHandle
  */
 void closeJobHandle(JobHandle job) {
+    waitForJob(job);
+    release_all_resources(job);
+}
 
+void release_all_resources(JobHandle job_handle) {
+    auto* job_handle_object = static_cast<JobHandleObject*>(job);
 }
 
 /**
@@ -344,4 +395,16 @@ void emit3(K3 *key, V3 *value, void *context) {
  * gets the JobHandle returned by startMapReduceFramework and waits until it is finished
  * @param job the JobHandle returned by startMapReduceFramework
  */
-void waitForJob(JobHandle job);
+void waitForJob(JobHandle job)
+{
+    auto* job_handle_object = static_cast<JobHandleObject*>(job);
+    job_handle_object->wait_mutex.lock();
+    if (!job_handle_object->get_flag())
+    {
+        job_handle_object->activate_flag();
+        for (int i = 0; i < job_handle_object->number_of_threads; ++i) {
+            pthread_join(job_handle_object->threads[i], nullptr);
+        }
+    }
+    job_handle_object->wait_mutex.unlock();
+};
