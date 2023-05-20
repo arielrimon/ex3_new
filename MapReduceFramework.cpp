@@ -48,11 +48,34 @@ struct JobContext { // resources used by all threads - every thread hold a point
     pthread_mutex_t end_map_stage_mutex;
     pthread_mutex_t update_stage_mutex;
     pthread_mutex_t emit3_mutex;
-//    pthread_mutex_t wait_mutex = PTHREAD_MUTEX_INITIALIZER;
-//    pthread_mutex_t end_map_stage_mutex = PTHREAD_MUTEX_INITIALIZER;
-//    pthread_mutex_t update_stage_mutex = PTHREAD_MUTEX_INITIALIZER;
     float total_items_to_process;
-    std::atomic<uint64_t> *current_processed;
+    std::atomic<uint64_t> *current_processed_atomic_counter;
+
+    JobContext(JobState * job_state, const MapReduceClient *client, OutputVec *output_vec, int numOfThreads) {
+        this->client = client;
+        this->all_intermediate_vec = new std::vector<IntermediateVec *>();
+        this->shuffled_intermediate_vec = new std::vector<IntermediateVec *>();
+        this->output_vec = output_vec;
+//        this->job_state->stage = job_state->stage;
+//        this->job_state->percentage = job_state->percentage;
+        this->job_state = job_state;
+        this->barrier = new Barrier(numOfThreads);
+        this->total_items_to_process = 0;
+
+        // init atomic counters
+        this->map_atomic_counter = new std::atomic<int>();
+        this->reduce_atomic_counter = new std::atomic<int>();
+        this->current_processed_atomic_counter = new std::atomic<uint64_t>();
+        this->map_atomic_counter->store(0);
+        this->reduce_atomic_counter->store(0);
+        this->current_processed_atomic_counter->store(0);
+
+        //init mutexes
+        this->wait_mutex = PTHREAD_MUTEX_INITIALIZER;
+        this->end_map_stage_mutex = PTHREAD_MUTEX_INITIALIZER;
+        this->emit3_mutex = PTHREAD_MUTEX_INITIALIZER;
+        this->update_stage_mutex = PTHREAD_MUTEX_INITIALIZER;
+    }
 
     void activate_flag() {
         this->flag.store(1);
@@ -114,7 +137,7 @@ void remove_empty_vectors(std::vector<IntermediateVec *> *all_vectors, ThreadCon
 
 void release_all_resources(JobHandle job_handle);
 
-void update_stage(JobContext* job_context, stage_t stage, float i);
+void update_stage(JobContext *job_context, stage_t stage, float i);
 
 int get_size_of_vector_of_vectors(std::vector<IntermediateVec *> *pVector);
 
@@ -133,7 +156,7 @@ void *map_reduce_method(void *context) {
     auto *tc = (ThreadContext *) context;
 
     //Map
-    auto input_vec_size = (float)tc->input_vec->size();
+    auto input_vec_size = (float) tc->input_vec->size();
     update_stage(tc->job_context, MAP_STAGE, input_vec_size);
     int current_index = (*(tc->job_context->map_atomic_counter))++;
     tc->job_context->total_items_to_process = input_vec_size;
@@ -141,7 +164,7 @@ void *map_reduce_method(void *context) {
         //Todo: how should I increase the percentage
         tc->job_context->client->map(tc->input_vec->at(current_index).first, tc->input_vec->at(current_index).second,
                                      context);
-        (*(tc->job_context->current_processed))++;
+        (*(tc->job_context->current_processed_atomic_counter))++;
         current_index = (*(tc->job_context->map_atomic_counter))++;
     }
     //Sort
@@ -173,7 +196,7 @@ void *map_reduce_method(void *context) {
     int current_reduce_index = (*(tc->job_context->reduce_atomic_counter))++;
     unsigned long shuffled_intermediate_vec_size = tc->job_context->shuffled_intermediate_vec->size();
     while (current_reduce_index < shuffled_intermediate_vec_size) {
-//        (*(tc->job_context->current_processed)).fetch_add(tc->job_context->shuffled_intermediate_vec->at(current_reduce_index)->size());
+//        (*(tc->job_context->current_processed_atomic_counter)).fetch_add(tc->job_context->shuffled_intermediate_vec->at(current_reduce_index)->size());
         tc->job_context->client->reduce(tc->job_context->shuffled_intermediate_vec->at(current_reduce_index), context);
         current_reduce_index = (*(tc->job_context->reduce_atomic_counter))++;
     }
@@ -194,13 +217,13 @@ int get_size_of_vector_of_vectors(std::vector<IntermediateVec *> *pVector) {
 //    job_stage->stage = stage;
 //    job_stage->percentage = 0;
 //}
-void update_stage(JobContext* jc, stage_t stage, float total) {
+void update_stage(JobContext *jc, stage_t stage, float total) {
 
     //TODO: ADD MUTEX as these are many atomic functions together
     jc->job_state->stage = stage;
     jc->job_state->percentage = 0;
     jc->total_items_to_process = total;
-    jc->current_processed->store(0);
+    jc->current_processed_atomic_counter->store(0);
 }
 
 /**
@@ -218,7 +241,7 @@ K2 *get_max_key(std::vector<IntermediateVec *> *all_vectors) {
             continue;
         }
 //        max_key = std::max(max_key, vec->back().first);
-        if (!vec->empty() && *max_key < *(vec->back().first)){
+        if (!vec->empty() && *max_key < *(vec->back().first)) {
             max_key = vec->back().first;
         }
     }
@@ -235,10 +258,11 @@ void
 pop_all_max_keys(K2 *max_key, IntermediateVec *intermediateVecOutput, std::vector<IntermediateVec *> *all_vec_input,
                  ThreadContext *tc, int &current_number_of_processed_pairs) {
     for (auto vec: *all_vec_input) {
-        while (!vec->empty() && !(*vec->back().first < *max_key) && !(*max_key < *vec->back().first)) { // goes over the vector backwards as long as it equals the max_key
+        while (!vec->empty() && !(*vec->back().first < *max_key) &&
+               !(*max_key < *vec->back().first)) { // goes over the vector backwards as long as it equals the max_key
             intermediateVecOutput->push_back(vec->back());
             vec->pop_back();
-            (*(tc->job_context->current_processed))++;
+            (*(tc->job_context->current_processed_atomic_counter))++;
 //            tc->job_context->job_state->percentage =
 //                    ((float) current_number_of_processed_pairs / (float) (initial_size)) * 100;
         }
@@ -323,34 +347,10 @@ void init_thread_context(const InputVec &inputVec, ThreadContext *thread_context
  * @return pointer to JobContext obj that holds all resources for all threads
  */
 JobContext *
-init_job_context(OutputVec &outputVec, const MapReduceClient &client, JobState *job_state, int numOfThreads) {
+init_job_context(OutputVec &output_vec, const MapReduceClient &client, JobState *job_state, int numOfThreads) {
     // called only once as the resources are same for all threads
-    //allocation of all resources
-    auto *map_atomic_counter = new std::atomic<int>();
-    map_atomic_counter->store(0);
-    auto *reduce_atomic_counter = new std::atomic<int>();
-    reduce_atomic_counter->store(0);
-    auto *all_vectors = new std::vector<IntermediateVec *>();
-    auto *shuffled_intermediate_vec = new std::vector<IntermediateVec *>();
-    auto *job_context = (JobContext *) malloc(sizeof(JobContext));
-    auto *current_processed = new std::atomic<uint64_t>();
-    current_processed->store(0);
-
     // placing all resources in the JobContext obj
-    job_context->client = &client;
-    job_context->all_intermediate_vec = all_vectors;
-    job_context->shuffled_intermediate_vec = shuffled_intermediate_vec;
-    job_context->output_vec = &outputVec;
-    job_context->job_state = job_state;
-    job_context->barrier = new Barrier(numOfThreads);
-    job_context->map_atomic_counter = map_atomic_counter;
-    job_context->reduce_atomic_counter = reduce_atomic_counter;
-    job_context->total_items_to_process = 0;
-    job_context->current_processed = current_processed;
-    job_context->wait_mutex = PTHREAD_MUTEX_INITIALIZER;
-    job_context->end_map_stage_mutex = PTHREAD_MUTEX_INITIALIZER;
-    job_context->emit3_mutex = PTHREAD_MUTEX_INITIALIZER;
-    job_context->update_stage_mutex = PTHREAD_MUTEX_INITIALIZER;
+    JobContext* job_context = new JobContext(job_state,&client,&output_vec,numOfThreads);
 
     return job_context;
 }
@@ -415,7 +415,7 @@ void getJobState(JobHandle job, JobState *state) {
     auto *job_context = static_cast<JobContext *>(job);
     pthread_mutex_lock(&job_context->update_stage_mutex); //TODO make sure mutex work
     state->stage = job_context->job_state->stage;
-    float current_processed = (float) job_context->current_processed->load();
+    float current_processed = (float) job_context->current_processed_atomic_counter->load();
     state->percentage = (current_processed / job_context->total_items_to_process) * 100;
     pthread_mutex_unlock(&job_context->update_stage_mutex);
 }
@@ -433,6 +433,7 @@ void closeJobHandle(JobHandle job) {
 
 void release_all_resources(JobHandle job_handle) {
     auto *job_context = static_cast<JobContext *>(job_handle);
+
 }
 
 /**
