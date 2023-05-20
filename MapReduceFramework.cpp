@@ -8,30 +8,22 @@
 
 
 ///------------------------------ STRUCTS -----------------------------------------
-struct JobHandleObject{
-    JobHandleObject(JobState *job_state, pthread_t *threads, int number_of_threads) {
-    this->job_state =job_state;
-    this->threads = threads;
-    this->number_of_threads = number_of_threads;
-    this->flag.store(0);
-    }
-
-    JobState* job_state;
-    std::atomic<int> flag;
-    pthread_t* threads;
-    std::mutex wait_mutex;
-    int number_of_threads;
-
-    void activate_flag()
-    {
-        this->flag.store(1);
-    }
-
-    bool get_flag()
-    {
-        return this->flag.load();
-    }
-};
+//struct JobHandleObject{
+//    JobHandleObject(JobState *job_state, pthread_t *threads, int number_of_threads) {
+//    this->job_state =job_state;
+//    this->threads = threads;
+//    this->number_of_threads = number_of_threads;
+//    this->flag.store(0);
+//    }
+//
+//    JobState* job_state;
+//    std::atomic<int> flag;
+//    pthread_t* threads;
+//    std::mutex wait_mutex;
+//    int number_of_threads;
+//
+//
+//};
 
 struct JobContext { // resources used by all threads - every thread hold a pointer
     pthread_t* threads;
@@ -45,25 +37,62 @@ struct JobContext { // resources used by all threads - every thread hold a point
     std::atomic<int> *map_atomic_counter;
     std::atomic<int> *reduce_atomic_counter;
     Barrier *barrier;
-    std::atomic<int> flag;
+    std::atomic<int> flag{}; //TODO: delete {} if needed
     std::mutex wait_mutex;
-//
-//
-//    JobContext(JobState *job_state, pthread_t *threads, int number_of_threads) {
-//        this->job_state =job_state;
-//        this->threads = threads;
-//        this->number_of_threads = number_of_threads;
-//        this->flag.store(0);
-//        this->client = &client;
-//        this->all_intermediate_vec = all_vectors;
-//        this->shuffled_intermediate_vec = shuffled_intermediate_vec;
-//        this->output_vec = &outputVec;
-//        this->end_map_stage_mutex = (std::mutex *) malloc(sizeof(std::mutex));
-//        this->job_state = job_state;
-//        this->barrier = new Barrier(numOfThreads);
-//        this->map_atomic_counter = map_atomic_counter;
-//        this->reduce_atomic_counter = reduce_atomic_counter;
-//    }
+
+    JobContext(JobState *job_state, pthread_t *threads, int number_of_threads, OutputVec &outputVec,
+               const MapReduceClient &client, int numOfThreads) {
+        auto *map_atomic_counter = (std::atomic<int> *) malloc(sizeof(std::atomic<int>));
+        map_atomic_counter->store(0);
+        auto *reduce_atomic_counter = (std::atomic<int> *) malloc(sizeof(std::atomic<int>));
+        reduce_atomic_counter->store(0);
+        auto *all_vectors = new std::vector<IntermediateVec *>();
+        auto *shuffled_intermediate_vec = new std::vector<IntermediateVec *>();
+//        auto *job_context = (JobContext *) malloc(sizeof(JobContext));
+
+        this->job_state =job_state;
+        this->threads = threads;
+        this->number_of_threads = number_of_threads;
+        this->flag.store(0);
+        this->client = &client;
+        this->all_intermediate_vec = all_vectors;
+        this->shuffled_intermediate_vec = shuffled_intermediate_vec;
+        this->output_vec = &outputVec;
+        this->end_map_stage_mutex = (std::mutex *) malloc(sizeof(std::mutex));
+        this->job_state = job_state;
+        this->barrier = new Barrier(numOfThreads);
+        this->map_atomic_counter = map_atomic_counter;
+        this->reduce_atomic_counter = reduce_atomic_counter;
+    }
+    ~JobContext(){
+        //TODO: finish!
+        delete[] this->threads;
+        delete this->job_state;
+        delete this->all_intermediate_vec;
+        delete this->shuffled_intermediate_vec;
+        delete this->output_vec;
+        delete this->map_atomic_counter;
+        delete this->reduce_atomic_counter;
+//        delete this->flag;
+//        delete this->wait_mutex;
+//        delete this->end_map_stage_mutex;
+//        delete this->barrier;
+
+    }
+    void activate_flag()
+    {
+        this->flag.store(1);
+    }
+
+    bool get_flag()
+    {
+        return this->flag.load();
+    }
+    JobState* get_state() const
+    {
+        return this->job_state;
+    }
+
 
 };
 
@@ -72,6 +101,16 @@ struct ThreadContext {
     const InputVec *input_vec;
     JobContext *job_context; // JobContext of all threads
     IntermediateVec *intermediate_vec;
+
+    ThreadContext(const InputVec &inputVec,
+//                  ThreadContext *thread_context,
+                  JobContext *job_context, const int i){
+        this->thread_id = i;
+        this->job_context = job_context;
+        this->input_vec = &inputVec;
+        this->intermediate_vec = new IntermediateVec();
+
+    }
 };
 
 ///------------------------------ FUNCTIONS USED -----------------------------------------
@@ -105,27 +144,27 @@ bool compare(const IntermediatePair &a, const IntermediatePair &b) {
 }
 
 // map reduce
-void *map_reduce_method(void *context) {
+void *map_reduce_method(void *context, JobContext* job_context) {
     auto *tc = (ThreadContext *) context;
 
     //Map
-    tc->job_context->job_state->stage = MAP_STAGE;
-    int current_index = (*(tc->job_context->map_atomic_counter))++;
+    job_context->job_state->stage = MAP_STAGE;
+    int current_index = (*(job_context->map_atomic_counter))++;
     while (current_index < tc->input_vec->size()) {
         //Todo: how should I increase the percentage
-        tc->job_context->client->map(tc->input_vec->at(current_index).first, tc->input_vec->at(current_index).second,
+        job_context->client->map(tc->input_vec->at(current_index).first, tc->input_vec->at(current_index).second,
                                      context);
-        current_index = (*(tc->job_context->map_atomic_counter))++;
+        current_index = (*(job_context->map_atomic_counter))++;
     }
     //Sort
     std::sort(tc->intermediate_vec->begin(), tc->intermediate_vec->end(), compare);
-    tc->job_context->barrier->barrier();
+    job_context->barrier->barrier();
 
     //Shuffle
-    tc->job_context->job_state->stage = SHUFFLE_STAGE;
+    job_context->job_state->stage = SHUFFLE_STAGE;
     if (tc->thread_id == 0) {
-        std::vector<IntermediateVec *> *all_intermediate_vec = tc->job_context->all_intermediate_vec;
-        std::vector<IntermediateVec *> *shuffled_vector = tc->job_context->shuffled_intermediate_vec;
+        std::vector<IntermediateVec *> *all_intermediate_vec = job_context->all_intermediate_vec;
+        std::vector<IntermediateVec *> *shuffled_vector = job_context->shuffled_intermediate_vec;
 
         while (!all_intermediate_vec->at(0)->empty()) {
             K2 *max_key = get_max_key(all_intermediate_vec); // gets the maximal key of all keys imn all vec
@@ -135,15 +174,15 @@ void *map_reduce_method(void *context) {
         }
 
     }
-    tc->job_context->barrier->barrier();
-    tc->job_context->job_state->stage = REDUCE_STAGE;
+    job_context->barrier->barrier();
+    job_context->job_state->stage = REDUCE_STAGE;
     //Reduce
-    current_index = (*(tc->job_context->reduce_atomic_counter))++;
-    while (current_index < tc->job_context->shuffled_intermediate_vec->size()) {
-        tc->job_context->client->reduce(tc->job_context->shuffled_intermediate_vec->at(current_index), context);
-        current_index = (*(tc->job_context->reduce_atomic_counter))++;
+    current_index = (*(job_context->reduce_atomic_counter))++;
+    while (current_index < job_context->shuffled_intermediate_vec->size()) {
+        job_context->client->reduce(job_context->shuffled_intermediate_vec->at(current_index), context);
+        current_index = (*(job_context->reduce_atomic_counter))++;
     }
-    return tc->job_context->job_state;
+    return job_context->job_state;
 }
 
 /**
@@ -232,6 +271,8 @@ ThreadContext *init_thread_contexts(OutputVec &outputVec, int multiThreadLevel, 
 
     for (int i = 0; i < multiThreadLevel; ++i) {
         init_thread_context(inputVec, thread_contexts + i, job_context, i);
+//        thread_context = new ThreadContext(inputVec, thread_contexts + i, job_context, i)
+//        job_context->all_intermediate_vec->push_back(thread_context->intermediate_vec);
     }
     return thread_contexts;
 }
@@ -245,45 +286,46 @@ ThreadContext *init_thread_contexts(OutputVec &outputVec, int multiThreadLevel, 
  */
 void init_thread_context(const InputVec &inputVec, ThreadContext *thread_context,
                          JobContext *job_context, const int i) {
-    thread_context->thread_id = i;
-    thread_context->job_context = job_context;
-    thread_context->input_vec = &inputVec;
-    thread_context->intermediate_vec = new IntermediateVec();
+//    thread_context->thread_id = i;
+//    thread_context->job_context = job_context;
+//    thread_context->input_vec = &inputVec;
+//    thread_context->intermediate_vec = new IntermediateVec();
+    thread_context = new ThreadContext(inputVec, job_context, i);
     job_context->all_intermediate_vec->push_back(thread_context->intermediate_vec);
 }
 
-/**
- *
- * @param outputVec
- * @param client
- * @param job_state
- * @param numOfThreads
- * @return pointer to JobContext obj that holds all resources for all threads
- */
-JobContext *
-init_job_context(OutputVec &outputVec, const MapReduceClient &client, JobState *job_state, int numOfThreads) {
-    // called only once as the resources are same for all threads
-    //allocation of all resources
-    auto *map_atomic_counter = (std::atomic<int> *) malloc(sizeof(std::atomic<int>));
-    map_atomic_counter->store(0);
-    auto *reduce_atomic_counter = (std::atomic<int> *) malloc(sizeof(std::atomic<int>));
-    reduce_atomic_counter->store(0);
-    auto *all_vectors = new std::vector<IntermediateVec *>();
-    auto *shuffled_intermediate_vec = new std::vector<IntermediateVec *>();
-    auto *job_context = (JobContext *) malloc(sizeof(JobContext));
-
-    // placing all resources in the JobContext obj
-    job_context->client = &client;
-    job_context->all_intermediate_vec = all_vectors;
-    job_context->shuffled_intermediate_vec = shuffled_intermediate_vec;
-    job_context->output_vec = &outputVec;
-    job_context->end_map_stage_mutex = (std::mutex *) malloc(sizeof(std::mutex));
-    job_context->job_state = job_state;
-    job_context->barrier = new Barrier(numOfThreads);
-    job_context->map_atomic_counter = map_atomic_counter;
-    job_context->reduce_atomic_counter = reduce_atomic_counter;
-    return job_context;
-}
+///**
+// *
+// * @param outputVec
+// * @param client
+// * @param job_state
+// * @param numOfThreads
+// * @return pointer to JobContext obj that holds all resources for all threads
+// */
+//JobContext *
+//init_job_context(OutputVec &outputVec, const MapReduceClient &client, JobState *job_state, int numOfThreads) {
+//    // called only once as the resources are same for all threads
+//    //allocation of all resources
+//    auto *map_atomic_counter = (std::atomic<int> *) malloc(sizeof(std::atomic<int>));
+//    map_atomic_counter->store(0);
+//    auto *reduce_atomic_counter = (std::atomic<int> *) malloc(sizeof(std::atomic<int>));
+//    reduce_atomic_counter->store(0);
+//    auto *all_vectors = new std::vector<IntermediateVec *>();
+//    auto *shuffled_intermediate_vec = new std::vector<IntermediateVec *>();
+//    auto *job_context = (JobContext *) malloc(sizeof(JobContext));
+//
+//    // placing all resources in the JobContext obj
+//    job_context->client = &client;
+//    job_context->all_intermediate_vec = all_vectors;
+//    job_context->shuffled_intermediate_vec = shuffled_intermediate_vec;
+//    job_context->output_vec = &outputVec;
+//    job_context->end_map_stage_mutex = (std::mutex *) malloc(sizeof(std::mutex));
+//    job_context->job_state = job_state;
+//    job_context->barrier = new Barrier(numOfThreads);
+//    job_context->map_atomic_counter = map_atomic_counter;
+//    job_context->reduce_atomic_counter = reduce_atomic_counter;
+//    return job_context;
+//}
 
 /**
  *
@@ -316,12 +358,13 @@ startMapReduceJob(const MapReduceClient &client, const InputVec &inputVec, Outpu
     pthread_t threads[multiThreadLevel];
     JobState *job_state = get_new_job_state();
     // NOTICE: I changed it so we build it only once and every thread gets a pointer of it! works the same!
-    JobContext *job_context = init_job_context(outputVec, client, job_state, multiThreadLevel);
+    JobContext *job_context = new JobContext(job_state, threads, multiThreadLevel, outputVec, client, multiThreadLevel);
+//    JobContext *job_context = init_job_context(outputVec, client, job_state, multiThreadLevel);
 
     ThreadContext *thread_contexts = init_thread_contexts(outputVec, multiThreadLevel, client, inputVec, job_state,
                                                           job_context);
 
-    map_reduce_method(thread_contexts);
+    map_reduce_method(thread_contexts, job_context);
 
 //    for (int i = 0; i < multiThreadLevel; ++i) {
 //        pthread_create(threads + i, nullptr, map_reduce_method, thread_contexts + i);
@@ -334,8 +377,8 @@ startMapReduceJob(const MapReduceClient &client, const InputVec &inputVec, Outpu
 //        client.map(pair.first, pair.second, thread_contexts + counter);
 //        counter++;
 //    }
-    auto* job_handle_object = new JobHandleObject(job_state, threads, multiThreadLevel);
-    return static_cast<JobHandle>(job_handle_object);
+//    auto* job_handle_object = new JobHandleObject(job_state, threads, multiThreadLevel);
+    return static_cast<JobHandle>(job_context);
 }
 
 /**
@@ -344,9 +387,9 @@ startMapReduceJob(const MapReduceClient &client, const InputVec &inputVec, Outpu
  * @param state JobState struct to update the job to
  */
 void getJobState(JobHandle job, JobState *state) {
-    auto* job_handle_object = static_cast<JobHandleObject*>(job);
-    state->stage = job_handle_object->job_state->stage;
-    state->percentage =  job_handle_object->job_state->percentage;
+    auto* job_context = static_cast<JobContext*>(job);
+    state->stage = job_context->get_state()->stage;
+    state->percentage =  job_context->get_state()->percentage;
 }
 
 /**
@@ -360,8 +403,9 @@ void closeJobHandle(JobHandle job) {
     release_all_resources(job);
 }
 
-void release_all_resources(JobHandle job_handle) {
-    auto* job_handle_object = static_cast<JobHandleObject*>(job);
+void release_all_resources(JobHandle job) {
+    auto* job_context = static_cast<JobContext*>(job);
+
 }
 
 /**
@@ -397,14 +441,14 @@ void emit3(K3 *key, V3 *value, void *context) {
  */
 void waitForJob(JobHandle job)
 {
-    auto* job_handle_object = static_cast<JobHandleObject*>(job);
-    job_handle_object->wait_mutex.lock();
-    if (!job_handle_object->get_flag())
+    auto* job_context = static_cast<JobContext*>(job);
+    job_context->wait_mutex.lock();
+    if (!job_context->get_flag())
     {
-        job_handle_object->activate_flag();
-        for (int i = 0; i < job_handle_object->number_of_threads; ++i) {
-            pthread_join(job_handle_object->threads[i], nullptr);
+        job_context->activate_flag();
+        for (int i = 0; i < job_context->number_of_threads; ++i) {
+            pthread_join(job_context->threads[i], nullptr);
         }
     }
-    job_handle_object->wait_mutex.unlock();
+    job_context->wait_mutex.unlock();
 };
