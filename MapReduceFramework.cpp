@@ -41,8 +41,9 @@ init_job_context(OutputVec &outputVec, const MapReduceClient &client, JobState *
 // helpers for shuffle funcs
 K2 *get_max_key(std::vector<IntermediateVec *> *all_vectors);
 void
-pop_all_max_keys(K2 *max_key, IntermediateVec *intermediateVecOutput, std::vector<IntermediateVec *> *all_vec_input);
-void remove_empty_vectors(std::vector<IntermediateVec *> *all_vectors);
+pop_all_max_keys(K2 *max_key, IntermediateVec *intermediateVecOutput, std::vector<IntermediateVec *> *all_vec_input,
+                 ThreadContext *pContext);
+void remove_empty_vectors(std::vector<IntermediateVec *> *all_vectors, ThreadContext *pContext);
 
 
 /**
@@ -78,10 +79,10 @@ void *map_reduce_method(void *context) {
         std::vector<IntermediateVec *> *all_intermediate_vec = tc->job_context->all_intermediate_vec;
         std::vector<IntermediateVec *> *shuffled_vector = tc->job_context->shuffled_intermediate_vec;
 
-        while (!all_intermediate_vec->empty()) {
+        while (!all_intermediate_vec->at(0)->empty()) {
             K2 *max_key = get_max_key(all_intermediate_vec); // gets the maximal key of all keys imn all vec
             auto *max_key_vector = (IntermediateVec *) malloc(sizeof(IntermediateVec));
-            pop_all_max_keys(max_key, max_key_vector, all_intermediate_vec);
+            pop_all_max_keys(max_key, max_key_vector, all_intermediate_vec, tc);
             shuffled_vector->push_back(max_key_vector);
         }
 
@@ -123,15 +124,16 @@ K2 *get_max_key(std::vector<IntermediateVec *> *all_vectors) {
  * @param all_vec_input all vectors
  */
 void
-pop_all_max_keys(K2 *max_key, IntermediateVec *intermediateVecOutput, std::vector<IntermediateVec *> *all_vec_input) {
+pop_all_max_keys(K2 *max_key, IntermediateVec *intermediateVecOutput, std::vector<IntermediateVec *> *all_vec_input,
+                 ThreadContext *pContext) {
     for (auto vec: *all_vec_input) {
-        while (vec->back().first == max_key) { // goes over the vector backwards as long as it equals the max_key
+        while (!vec->empty() && vec->back().first == max_key) { // goes over the vector backwards as long as it equals the max_key
             intermediateVecOutput->push_back(vec->back());
             vec->pop_back();
         }
     }
     //after finishing emptying every vector from max_key pairs - going over and deleting all empty vectors
-    remove_empty_vectors(all_vec_input);
+    remove_empty_vectors(all_vec_input, pContext);
 }
 
 /**
@@ -151,12 +153,19 @@ bool free_if_empty(const IntermediateVec *intermediate_vec) {
  * Remove empty vectors of all vectors
  * @param all_vectors after sort phase
  */
-void remove_empty_vectors(std::vector<IntermediateVec *> *all_vectors) {
-    all_vectors->erase(
-            std::remove_if(all_vectors->begin(), all_vectors->end(),
-                           [](const IntermediateVec *intermediate_vec) {
-                               return free_if_empty(intermediate_vec);
-                           }), all_vectors->end());
+void remove_empty_vectors(std::vector<IntermediateVec *> *all_vectors, ThreadContext *pContext) {
+    if(all_vectors->size() != 1)
+    {
+        bool (*check_if_vector_empty)(const IntermediateVec *) = [](const IntermediateVec *intermediate_vec) {
+            return free_if_empty(
+                    intermediate_vec);
+        };
+        const std::vector<IntermediateVec *>::iterator &vectors_to_erase = std::remove_if(all_vectors->begin(),
+                                                                                          all_vectors->end(),
+                                                                                          check_if_vector_empty);
+        all_vectors->erase(
+                vectors_to_erase, all_vectors->end());
+    }
 }
 
 /**
@@ -263,19 +272,22 @@ startMapReduceJob(const MapReduceClient &client, const InputVec &inputVec, Outpu
 
     ThreadContext *thread_contexts = init_thread_contexts(outputVec, multiThreadLevel, client, inputVec, job_state,
                                                           job_context);
-    for (int i = 0; i < multiThreadLevel; ++i) {
-        pthread_create(threads + i, nullptr, map_reduce_method, thread_contexts + i);
-    }
 
-    for (int i = 0; i < multiThreadLevel; ++i) {
-        pthread_join(threads[i], nullptr);
-    }
+    map_reduce_method(thread_contexts);
 
-    int counter = 0;
-    for (const auto &pair: inputVec) {
-        client.map(pair.first, pair.second, thread_contexts + counter);
-        counter++;
-    }
+//    for (int i = 0; i < multiThreadLevel; ++i) {
+//        pthread_create(threads + i, nullptr, map_reduce_method, thread_contexts + i);
+//    }
+//
+//    for (int i = 0; i < multiThreadLevel; ++i) {
+//        pthread_join(threads[i], nullptr);
+//    }
+//
+//    int counter = 0;
+//    for (const auto &pair: inputVec) {
+//        client.map(pair.first, pair.second, thread_contexts + counter);
+//        counter++;
+//    }
 
     return static_cast<JobHandle>(job_state);
 }
