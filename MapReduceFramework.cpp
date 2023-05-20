@@ -165,12 +165,11 @@ void *map_reduce_method(void *context) {
     update_stage(tc->job_context, REDUCE_STAGE, number_of_shuffled_items);
     current_index = (*(tc->job_context->reduce_atomic_counter))++;
 
-    float current_number_of_reduced_items = 0;
     while (current_index < tc->job_context->shuffled_intermediate_vec->size()) {
-        current_number_of_reduced_items += tc->job_context->shuffled_intermediate_vec->at(current_index)->size();
+        int current_number_of_reduced_items = tc->job_context->shuffled_intermediate_vec->at(current_index)->size();
         tc->job_context->client->reduce(tc->job_context->shuffled_intermediate_vec->at(current_index), context);
-        tc->job_context->job_state->percentage = (current_number_of_reduced_items  / number_of_shuffled_items) * 100;
         current_index = (*(tc->job_context->reduce_atomic_counter))++;
+        (*(tc->job_context->current_processed))+=current_number_of_reduced_items;
     }
     return tc->job_context->job_state;
 }
@@ -226,8 +225,7 @@ void
 pop_all_max_keys(K2 *max_key, IntermediateVec *intermediateVecOutput, std::vector<IntermediateVec *> *all_vec_input,
                  ThreadContext *tc, int &current_number_of_processed_pairs) {
     for (auto vec: *all_vec_input) {
-        while (!vec->empty() &&
-               vec->back().first == max_key) { // goes over the vector backwards as long as it equals the max_key
+        while (!vec->empty() && !(*vec->back().first < *max_key) && !(*max_key < *vec->back().first)) { // goes over the vector backwards as long as it equals the max_key
             intermediateVecOutput->push_back(vec->back());
             vec->pop_back();
             (*(tc->job_context->current_processed))++;
@@ -405,7 +403,8 @@ void getJobState(JobHandle job, JobState *state) {
     auto *job_context = static_cast<JobContext *>(job);
     state->stage = job_context->job_state->stage;
     //TODO: put mutex here
-    state->percentage = ((float) job_context->current_processed->load()/job_context->total_items_to_process)*100;
+    float current_processed = (float) job_context->current_processed->load();
+    state->percentage = (current_processed / job_context->total_items_to_process) * 100;
 }
 
 /**
