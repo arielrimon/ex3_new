@@ -4,33 +4,16 @@
 #include <algorithm>
 #include <unistd.h>
 #include <malloc.h>
+#include <iostream>
 #include "MapReduceFramework.h"
 #include "Barrier.h"
 
+///------------------------------ ERROR MESSAGES ----------------------------------
+#define PJOIN_INVALID_VAL "system error: pthread_join return value is invalid \n"
+#define PCREATE_INVALID_VAL "system error: pthread_create return value is invalid \n"
 
 ///------------------------------ STRUCTS -----------------------------------------
-//struct JobHandleObject {
-//    JobHandleObject(JobState *job_state, pthread_t *threads, int number_of_threads) {
-//        this->job_state = job_state;
-//        this->threads = threads;
-//        this->number_of_threads = number_of_threads;
-//        this->flag.store(0);
-//    }
-//
-//    JobState *job_state;
-//    std::atomic<int> flag;
-//    pthread_t *threads;
-//    std::mutex wait_mutex;
-//    int number_of_threads;
-//
-//    void activate_flag() {
-//        this->flag.store(1);
-//    }
-//
-//    bool get_flag() {
-//        return this->flag.load();
-//    }
-//};
+
 struct JobContext ;
 
 struct ThreadContext {
@@ -132,6 +115,16 @@ struct JobContext { // resources used by all threads - every thread hold a point
 };
 
 ///------------------------------ FUNCTIONS USED -----------------------------------------
+// print errors funcs
+/**
+ * print an error message to the user and exits the program
+ * @param err_string matching message to the error
+ */
+void printErr(std::string err_string){
+    std::cout << err_string << std::endl;
+    exit(1);
+}
+
 
 // init funcs
 JobState *get_new_job_state();
@@ -338,10 +331,8 @@ void remove_empty_vectors(std::vector<IntermediateVec *> *all_vectors, ThreadCon
 ThreadContext** init_thread_contexts(OutputVec &outputVec, int multiThreadLevel, const MapReduceClient &client,
                                      const InputVec& inputVec, JobContext *job_context) {
     auto **thread_contexts = (ThreadContext **) malloc(multiThreadLevel * sizeof(ThreadContext*));
-//    ThreadContext * thread_contexts[multiThreadLevel];
 
     for (int i = 0; i < multiThreadLevel; ++i) {
-//        init_thread_context(inputVec, thread_contexts + i, job_context, i);
         thread_contexts[i] = new ThreadContext(i,inputVec,job_context);
         job_context->all_intermediate_vec->push_back(thread_contexts[i]->intermediate_vec);
     }
@@ -383,7 +374,9 @@ startMapReduceJob(const MapReduceClient &client, const InputVec &inputVec, Outpu
     job_context->threads = threads;
     job_context->thread_contexts = thread_contexts;
     for (int i = 0; i < multiThreadLevel; ++i) {
-        pthread_create(threads + i, nullptr, map_reduce_method, *(thread_contexts + i));
+        if(pthread_create(threads + i, nullptr, map_reduce_method, *(thread_contexts + i)) !=0 ){
+            printErr(PCREATE_INVALID_VAL);
+        }
     }
 //
 //    int counter = 0;
@@ -465,7 +458,9 @@ void waitForJob(JobHandle job) {
     if (!job_context->get_flag()) {
         job_context->activate_flag();
         for (int i = 0; i < job_context->number_of_threads; ++i) {
-            pthread_join(job_context->threads[i], nullptr);
+            if(pthread_join(job_context->threads[i], nullptr) != 0){
+                printErr(PJOIN_INVALID_VAL);
+            }
         }
     }
     pthread_mutex_unlock(&job_context->wait_mutex);
