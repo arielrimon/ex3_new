@@ -191,7 +191,8 @@ void *map_reduce_method(void *context) {
 //        int current_number_of_processed_pairs = 0;
         while (!all_intermediate_vec->empty() && !all_intermediate_vec->at(0)->empty()) {
             K2 *max_key = get_max_key(all_intermediate_vec); // gets the maximal key of all keys imn all vec
-            auto *max_key_vector = (IntermediateVec *) malloc(sizeof(IntermediateVec));
+            auto * max_key_vector = new IntermediateVec ();
+//            auto *max_key_vector = (IntermediateVec *) malloc(sizeof(IntermediateVec));
             pop_all_max_keys(max_key, max_key_vector, all_intermediate_vec, tc, all_intermediate_vec_size);
             shuffled_vector->push_back(max_key_vector);
         }
