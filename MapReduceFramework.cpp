@@ -137,7 +137,7 @@ struct JobContext { // resources used by all threads - every thread hold a point
 JobState *get_new_job_state();
 
 ThreadContext **init_thread_contexts(OutputVec &outputVec, int multiThreadLevel, const MapReduceClient &client,
-                                    const InputVec &inputVec, JobContext *job_context);
+                                     const InputVec &inputVec, JobContext *job_context);
 
 void init_thread_context(const InputVec &inputVec, ThreadContext *thread_context, JobContext *job_context, int i);
 
@@ -336,7 +336,7 @@ void remove_empty_vectors(std::vector<IntermediateVec *> *all_vectors, ThreadCon
  * @return
  */
 ThreadContext** init_thread_contexts(OutputVec &outputVec, int multiThreadLevel, const MapReduceClient &client,
-                                    const InputVec& inputVec, JobContext *job_context) {
+                                     const InputVec& inputVec, JobContext *job_context) {
     auto **thread_contexts = (ThreadContext **) malloc(multiThreadLevel * sizeof(ThreadContext*));
 //    ThreadContext * thread_contexts[multiThreadLevel];
 
@@ -418,6 +418,11 @@ void getJobState(JobHandle job, JobState *state) {
 void closeJobHandle(JobHandle job) {
     waitForJob(job);
     auto *job_context = static_cast<JobContext *>(job);
+    // delete all thread contexts
+    for (int i = 0; i < job_context->number_of_threads; ++i) {
+        delete job_context->thread_contexts[i];
+    }
+    // delete all job context and its sources
     delete job_context;
 }
 
