@@ -1,5 +1,5 @@
 #include "MapReduceFramework.h"
-#include "MapReduceClient.h"
+//#include "MapReduceFramework.cpp"
 #include <cstdio>
 #include <string>
 #include <array>
@@ -52,7 +52,7 @@ public:
 
 	virtual void reduce(const IntermediateVec* pairs, 
 		void* context) const {
-		const char c = static_cast<const KChar*>(pairs->at(0).first)->c; //=a
+		const char c = static_cast<const KChar*>(pairs->at(0).first)->c;
 		int count = 0;
 		for(const IntermediatePair& pair: *pairs) {
 			count += static_cast<const VCount*>(pair.second)->count;
@@ -61,7 +61,7 @@ public:
 		}
 		KChar* k3 = new KChar(c);
 		VCount* v3 = new VCount(count);
-		//usleep(150000);
+		usleep(150000);
 		emit3(k3, v3, context);
 	}
 };
@@ -80,13 +80,11 @@ int main(int argc, char** argv)
 	inputVec.push_back({nullptr, &s3});
 	JobState state;
     JobState last_state={UNDEFINED_STAGE,0};
-	JobHandle job = startMapReduceJob(client, inputVec, outputVec, 1);
+	JobHandle job = startMapReduceJob(client, inputVec, outputVec, 4);
 	getJobState(job, &state);
-
+    
 	while (state.stage != REDUCE_STAGE || state.percentage != 100.0)
 	{
-        printf("stage %d, %f%% \n",
-               state.stage, state.percentage);
         if (last_state.stage != state.stage || last_state.percentage != state.percentage){
             printf("stage %d, %f%% \n", 
 			state.stage, state.percentage);
