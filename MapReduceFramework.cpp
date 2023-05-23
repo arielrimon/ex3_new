@@ -361,7 +361,7 @@ ThreadContext** init_thread_contexts(OutputVec &outputVec, int multiThreadLevel,
  *
  * @return JobState obj where stage = UNDEFINED_STAGE
  */
-JobState *get_new_job_state() {
+JobState *  get_new_job_state() {
     auto *job = (JobState *) malloc(sizeof(JobState));
     if (job== nullptr){
         printErr(ERR_MALLOC_INVALID_VAL);
@@ -388,15 +388,16 @@ JobState *get_new_job_state() {
  */
 JobHandle
 startMapReduceJob(const MapReduceClient &client, const InputVec &inputVec, OutputVec &output_vec, int multiThreadLevel) {
-    pthread_t threads[multiThreadLevel];
     JobState *job_state = get_new_job_state();
+    pthread_t *threads = new pthread_t[multiThreadLevel];
     auto* job_context = new JobContext(job_state,&client,&output_vec,multiThreadLevel);
     ThreadContext **thread_contexts = init_thread_contexts(output_vec, multiThreadLevel, client, inputVec, job_context);
     job_context->threads = threads;
     job_context->thread_contexts = thread_contexts;
     for (int i = 0; i < multiThreadLevel; ++i) {
         if(pthread_create(threads + i, nullptr, map_reduce_method, *(thread_contexts + i)) !=0 ){
-            printErr(ERR_PCREATE_INVALID_VAL);
+            std::cerr << ERR_PCREATE_INVALID_VAL << std::endl;
+            exit(1);
         }
     }
 //
