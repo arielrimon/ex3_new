@@ -181,10 +181,10 @@ void *map_reduce_method(void *context) {
         current_index = (*(tc->job_context->map_atomic_counter))++;
     }
     //Sort
-    printf("Before barriers: %d\n", tc->thread_id);
+//    printf("Before barriers: %d\n", tc->thread_id);
     std::sort(tc->intermediate_vec->begin(), tc->intermediate_vec->end(), compare);
     tc->job_context->barrier->barrier();
-    printf("Between barriers: %d\n", tc->thread_id);
+//    printf("Between barriers: %d\n", tc->thread_id);
 
     //Shuffle
     if (tc->thread_id == 0) {
@@ -228,7 +228,7 @@ void *map_reduce_method(void *context) {
         }
         current_reduce_index = (*(tc->job_context->reduce_atomic_counter))++;
     }
-    printf("After barriers: %d\n", tc->thread_id);
+//    printf("After barriers: %d\n", tc->thread_id);
     return tc->job_context;
 }
 
