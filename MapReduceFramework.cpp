@@ -196,7 +196,6 @@ void *map_reduce_method(void *context) {
         while (!all_intermediate_vec->empty() && !all_intermediate_vec->at(0)->empty()) {
             K2 *max_key = get_max_key(all_intermediate_vec); // gets the maximal key of all keys imn all vec
             auto * max_key_vector = new IntermediateVec ();
-//            auto *max_key_vector = (IntermediateVec *) malloc(sizeof(IntermediateVec));
             pop_all_max_keys(max_key, max_key_vector, all_intermediate_vec, tc, all_intermediate_vec_size);
             shuffled_vector->push_back(max_key_vector);
         }
@@ -262,6 +261,9 @@ void update_stage(JobContext *jc, stage_t stage, float total) {
  */
 K2 *get_max_key(std::vector<IntermediateVec *> *all_vectors) {
     K2 *max_key = (K2 *) malloc(sizeof(K2));
+    if(max_key== nullptr){
+        printErr(ERR_MALLOC_INVALID_VAL);
+    }
     bool is_first_iteration = true;
     for (auto vec: *all_vectors) {
         if (is_first_iteration) {
@@ -344,6 +346,9 @@ void remove_empty_vectors(std::vector<IntermediateVec *> *all_vectors, ThreadCon
 ThreadContext** init_thread_contexts(OutputVec &outputVec, int multiThreadLevel, const MapReduceClient &client,
                                      const InputVec& inputVec, JobContext *job_context) {
     auto **thread_contexts = (ThreadContext **) malloc(multiThreadLevel * sizeof(ThreadContext*));
+    if(thread_contexts== nullptr){
+        printErr(ERR_MALLOC_INVALID_VAL);
+    }
 
     for (int i = 0; i < multiThreadLevel; ++i) {
         thread_contexts[i] = new ThreadContext(i,inputVec,job_context);
@@ -358,6 +363,9 @@ ThreadContext** init_thread_contexts(OutputVec &outputVec, int multiThreadLevel,
  */
 JobState *get_new_job_state() {
     auto *job = (JobState *) malloc(sizeof(JobState));
+    if (job== nullptr){
+        printErr(ERR_MALLOC_INVALID_VAL);
+    }
     job->stage = UNDEFINED_STAGE;
     job->percentage = 0;
     return job;
