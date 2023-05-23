@@ -9,8 +9,10 @@
 #include "Barrier.h"
 
 ///------------------------------ ERROR MESSAGES ----------------------------------
-#define PJOIN_INVALID_VAL "system error: pthread_join return value is invalid \n"
-#define PCREATE_INVALID_VAL "system error: pthread_create return value is invalid \n"
+#define ERR_PJOIN_INVALID_VAL "system error: pthread_join return value is invalid - action failed \n"
+#define ERR_PCREATE_INVALID_VAL "system error: pthread_create return value is invalid - action failed \n"
+#define ERR_PLOCK_PUNLOCK_INVALID_VAL "system error: pthread_lock\pthread_unlock return value is invalid - action failed \n"
+#define ERR_MALLOC_INVALID_VAL "system error: malloc action failed \n"
 
 ///------------------------------ STRUCTS -----------------------------------------
 
@@ -116,6 +118,8 @@ struct JobContext { // resources used by all threads - every thread hold a point
 
 ///------------------------------ FUNCTIONS USED -----------------------------------------
 // print errors funcs
+void printErr(std::string err_string);
+
 /**
  * print an error message to the user and exits the program
  * @param err_string matching message to the error
@@ -202,19 +206,27 @@ void *map_reduce_method(void *context) {
 
     tc->job_context->barrier->barrier();
     //Reduce
-    pthread_mutex_lock(&tc->job_context->end_map_stage_mutex);
+    if(pthread_mutex_lock(&tc->job_context->end_map_stage_mutex)!=0){
+        printErr(ERR_PLOCK_PUNLOCK_INVALID_VAL);
+    }
     if(tc->thread_id ==0){
         float number_of_shuffled_items = get_size_of_vector_of_vectors(tc->job_context->shuffled_intermediate_vec);
         update_stage(tc->job_context, REDUCE_STAGE, number_of_shuffled_items);
     }
-    pthread_mutex_unlock(&tc->job_context->end_map_stage_mutex);
+    if(pthread_mutex_unlock(&tc->job_context->end_map_stage_mutex)!=0){
+        printErr(ERR_PLOCK_PUNLOCK_INVALID_VAL);
+    }
     int current_reduce_index = (*(tc->job_context->reduce_atomic_counter))++;
     unsigned long shuffled_intermediate_vec_size = tc->job_context->shuffled_intermediate_vec->size();
     while (current_reduce_index < shuffled_intermediate_vec_size) {
-//        pthread_mutex_lock(&tc->job_context->reduce_stage_mutex);
+        if(pthread_mutex_lock(&tc->job_context->reduce_stage_mutex)!=0){
+            printErr(ERR_PLOCK_PUNLOCK_INVALID_VAL);
+        }
         tc->job_context->client->reduce(tc->job_context->shuffled_intermediate_vec->at(current_reduce_index), context);
         (*(tc->job_context->current_processed_atomic_counter)).fetch_add(tc->job_context->shuffled_intermediate_vec->at(current_reduce_index)->size());
-//        pthread_mutex_unlock(&tc->job_context->reduce_stage_mutex);
+        if(pthread_mutex_unlock(&tc->job_context->reduce_stage_mutex)!=0){
+            printErr(ERR_PLOCK_PUNLOCK_INVALID_VAL);
+        }
         current_reduce_index = (*(tc->job_context->reduce_atomic_counter))++;
     }
     printf("After barriers: %d\n", tc->thread_id);
@@ -376,7 +388,7 @@ startMapReduceJob(const MapReduceClient &client, const InputVec &inputVec, Outpu
     job_context->thread_contexts = thread_contexts;
     for (int i = 0; i < multiThreadLevel; ++i) {
         if(pthread_create(threads + i, nullptr, map_reduce_method, *(thread_contexts + i)) !=0 ){
-            printErr(PCREATE_INVALID_VAL);
+            printErr(ERR_PCREATE_INVALID_VAL);
         }
     }
 //
@@ -396,11 +408,15 @@ startMapReduceJob(const MapReduceClient &client, const InputVec &inputVec, Outpu
  */
 void getJobState(JobHandle job, JobState *state) {
     auto *job_context = static_cast<JobContext *>(job);
-    pthread_mutex_lock(&job_context->update_stage_mutex); //TODO make sure mutex work
+    if(pthread_mutex_lock(&job_context->update_stage_mutex)!=0){
+        printErr(ERR_PLOCK_PUNLOCK_INVALID_VAL);
+    }
     state->stage = job_context->job_state->stage;
     float current_processed = (float) job_context->current_processed_atomic_counter->load();
     state->percentage = (current_processed / job_context->total_items_to_process) * 100;
-    pthread_mutex_unlock(&job_context->update_stage_mutex);
+    if(pthread_mutex_unlock(&job_context->update_stage_mutex)!=0){
+        printErr(ERR_PLOCK_PUNLOCK_INVALID_VAL);
+    }
 }
 
 /**
@@ -443,10 +459,14 @@ void emit2(K2 *key, V2 *value, void *context) {
  */
 void emit3(K3 *key, V3 *value, void *context) {
     auto *tc = (ThreadContext *) context;
-    pthread_mutex_lock(&tc->job_context->emit3_mutex);
+    if(pthread_mutex_lock(&tc->job_context->emit3_mutex)!=0){
+        printErr(ERR_PLOCK_PUNLOCK_INVALID_VAL);
+    }
     OutputPair pair = OutputPair(key, value);
     tc->job_context->output_vec->push_back(pair);
-    pthread_mutex_unlock(&tc->job_context->emit3_mutex);
+    if(pthread_mutex_unlock(&tc->job_context->emit3_mutex)!=0){
+        printErr(ERR_PLOCK_PUNLOCK_INVALID_VAL);
+    }
 }
 
 /**
@@ -455,14 +475,18 @@ void emit3(K3 *key, V3 *value, void *context) {
  */
 void waitForJob(JobHandle job) {
     auto *job_context = static_cast<JobContext *>(job);
-    pthread_mutex_lock(&job_context->wait_mutex);
+    if(pthread_mutex_lock(&job_context->wait_mutex)!=0){
+        printErr(ERR_PLOCK_PUNLOCK_INVALID_VAL);
+    }
     if (!job_context->get_flag()) {
         job_context->activate_flag();
         for (int i = 0; i < job_context->number_of_threads; ++i) {
             if(pthread_join(job_context->threads[i], nullptr) != 0){
-                printErr(PJOIN_INVALID_VAL);
+                printErr(ERR_PJOIN_INVALID_VAL);
             }
         }
     }
-    pthread_mutex_unlock(&job_context->wait_mutex);
+    if(pthread_mutex_unlock(&job_context->wait_mutex)!=0){
+        printErr(ERR_PLOCK_PUNLOCK_INVALID_VAL);
+    }
 };
