@@ -1,6 +1,6 @@
-shirlevy, ariel#######
+shirlevy, arielrim
 
-Shir Levy (316419423), Ariel #####()
+Shir Levy (316419423), Ariel Rimon(315478016)
 
 
 ############################
@@ -11,8 +11,11 @@ Ex. 3 ######################
 ############################
 Submitted Files ############
 ############################
-
-
+README - answers
+MapReduceFramework.cpp - out implementation to the library
+Barrier.cpp - barrier class source file
+Barrier.h - barrier class header file
+Makefile - of library
 
 ############################
 Remarks ####################
