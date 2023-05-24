@@ -38,9 +38,6 @@ struct ThreadContext {
         this->input_vec = &inputVec;
         this->intermediate_vec = &innerVec;
     }
-    ~ThreadContext(){
-//        delete intermediate_vec;
-    }
 };
 
 struct JobContext { // resources used by all threads - every thread hold a pointer
@@ -56,13 +53,10 @@ struct JobContext { // resources used by all threads - every thread hold a point
     std::atomic<int> *reduce_atomic_counter;
     std::atomic<int> *flag;
     Barrier *barrier;
-    Barrier *barrier2;
+    Barrier *barrier_reduce;
     pthread_mutex_t wait_mutex;
-//    pthread_mutex_t end_map_stage_mutex;
     pthread_mutex_t state_protect_mutex;
-//    pthread_mutex_t update_state_mutex;
     pthread_mutex_t emit3_mutex;
-    pthread_mutex_t reduce_current_counter_mutex;
     float total_items_to_process;
     std::atomic<uint64_t> *current_processed_atomic_counter;
 
@@ -76,7 +70,7 @@ struct JobContext { // resources used by all threads - every thread hold a point
         this->output_vec = output_vec;
         this->job_state = job_state;
         this->barrier = new Barrier(numOfThreads);
-        this->barrier2 = new Barrier(numOfThreads);
+        this->barrier_reduce = new Barrier(numOfThreads);
         this->total_items_to_process = 0;
 
         // init atomic counters
@@ -91,9 +85,7 @@ struct JobContext { // resources used by all threads - every thread hold a point
 
         //init mutexes
         this->wait_mutex = PTHREAD_MUTEX_INITIALIZER;
-//        this->end_map_stage_mutex = PTHREAD_MUTEX_INITIALIZER;
         this->state_protect_mutex = PTHREAD_MUTEX_INITIALIZER;
-        this->reduce_current_counter_mutex = PTHREAD_MUTEX_INITIALIZER;
         this->emit3_mutex = PTHREAD_MUTEX_INITIALIZER;
     }
 
@@ -102,15 +94,13 @@ struct JobContext { // resources used by all threads - every thread hold a point
         delete this->all_intermediate_vec;
         delete this->shuffled_intermediate_vec;
         delete this->barrier;
-        delete this->barrier2;
+        delete this->barrier_reduce;
         delete this->map_atomic_counter;
         delete this->reduce_atomic_counter;
         delete this->current_processed_atomic_counter;
         delete this->flag;
         pthread_mutex_destroy(&wait_mutex);
-//        pthread_mutex_destroy(&end_map_stage_mutex);
         pthread_mutex_destroy(&state_protect_mutex);
-        pthread_mutex_destroy(&reduce_current_counter_mutex);
         pthread_mutex_destroy(&emit3_mutex);
 
     }
@@ -133,7 +123,7 @@ void printErr(std::string err_string);
  * @param err_string matching message to the error
  */
 void printErr(std::string err_string){
-    std::cerr << err_string << std::endl;
+    std::cout << err_string << std::endl;
     exit(1);
 }
 
@@ -144,9 +134,6 @@ JobState *get_new_job_state();
 ThreadContext **init_thread_contexts(OutputVec &outputVec, int multiThreadLevel, const MapReduceClient &client,
                                      const InputVec &inputVec, JobContext *job_context);
 
-void init_thread_context(const InputVec &inputVec, ThreadContext *thread_context, JobContext *job_context, int i);
-
-
 // helpers for shuffle funcs
 K2 *get_max_key(std::vector<IntermediateVec *> *all_vectors);
 
@@ -155,9 +142,6 @@ pop_all_max_keys(K2 *max_key, IntermediateVec *intermediateVecOutput, std::vecto
                  ThreadContext *tc, int &current_number_of_processed_pairs);
 
 void remove_empty_vectors(std::vector<IntermediateVec *> *all_vectors, ThreadContext *pContext);
-
-
-void release_all_resources(JobHandle job_handle);
 
 void update_state(JobContext *jc, stage_t stage, float total);
 
@@ -173,6 +157,11 @@ bool compare(const IntermediatePair &a, const IntermediatePair &b) {
     return *(a.first) < *(b.first);
 }
 
+/**
+ *
+ * @param all_intermediate_vec
+ * @return false if any of the vectors if not empty, otherwise true
+ */
 bool are_all_empty(std::vector<IntermediateVec *> *all_intermediate_vec){
     for (int i = 0; i < all_intermediate_vec->size(); ++i) {
         if(!all_intermediate_vec->at(i)->empty()){
@@ -217,14 +206,14 @@ void *map_reduce_method(void *context) {
     }
     tc->job_context->barrier->barrier();
 
-    tc->job_context->barrier2->barrier();
+    tc->job_context->barrier_reduce->barrier();
 
     //Reduce
     if(tc->thread_id ==0){
         float number_of_shuffled_items = get_size_of_vector_of_vectors(tc->job_context->shuffled_intermediate_vec);
         update_state(tc->job_context, REDUCE_STAGE, number_of_shuffled_items);
     }
-    tc->job_context->barrier2->barrier();
+    tc->job_context->barrier_reduce->barrier();
 
     int current_reduce_index = (*(tc->job_context->reduce_atomic_counter))++;
     unsigned long shuffled_intermediate_vec_size = tc->job_context->shuffled_intermediate_vec->size();
@@ -303,8 +292,6 @@ pop_all_max_keys(K2 *max_key, IntermediateVec *intermediateVecOutput, std::vecto
             intermediateVecOutput->push_back(vec->back());
             vec->pop_back();
             (*(tc->job_context->current_processed_atomic_counter))++;
-//            tc->job_context->job_state->percentage =
-//                    ((float) current_number_of_processed_pairs / (float) (initial_size)) * 100;
         }
     }
     //after finishing emptying every vector from max_key pairs - going over and deleting all empty vectors
@@ -408,13 +395,6 @@ startMapReduceJob(const MapReduceClient &client, const InputVec &inputVec, Outpu
             printErr(ERR_PCREATE_INVALID_VAL);
         }
     }
-//
-//    int counter = 0;
-//    for (const auto &pair: inputVec) {
-//        client.map(pair.first, pair.second, thread_contexts + counter);
-//        counter++;
-//    }
-
     return static_cast<JobHandle>(job_context);
 }
 
@@ -449,7 +429,6 @@ void closeJobHandle(JobHandle job) {
     // delete all thread contexts
     for (int i = 0; i < job_context->number_of_threads; ++i) {
         delete job_context->thread_contexts[i];
-//        delete job_context->thread_contexts[i]->intermediate_vec;
     }
     // delete all job context and its sources
     delete job_context;
