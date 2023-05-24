@@ -57,11 +57,11 @@ struct JobContext { // resources used by all threads - every thread hold a point
     std::atomic<int> *flag;
     Barrier *barrier;
     pthread_mutex_t wait_mutex;
-    pthread_mutex_t end_map_stage_mutex;
+//    pthread_mutex_t end_map_stage_mutex;
     pthread_mutex_t state_protect_mutex;
 //    pthread_mutex_t update_state_mutex;
     pthread_mutex_t emit3_mutex;
-    pthread_mutex_t reduce_stage_mutex;
+    pthread_mutex_t reduce_current_counter_mutex;
     float total_items_to_process;
     std::atomic<uint64_t> *current_processed_atomic_counter;
 
@@ -89,9 +89,9 @@ struct JobContext { // resources used by all threads - every thread hold a point
 
         //init mutexes
         this->wait_mutex = PTHREAD_MUTEX_INITIALIZER;
-        this->end_map_stage_mutex = PTHREAD_MUTEX_INITIALIZER;
+//        this->end_map_stage_mutex = PTHREAD_MUTEX_INITIALIZER;
         this->state_protect_mutex = PTHREAD_MUTEX_INITIALIZER;
-        this->reduce_stage_mutex = PTHREAD_MUTEX_INITIALIZER;
+        this->reduce_current_counter_mutex = PTHREAD_MUTEX_INITIALIZER;
         this->emit3_mutex = PTHREAD_MUTEX_INITIALIZER;
     }
 
@@ -105,9 +105,9 @@ struct JobContext { // resources used by all threads - every thread hold a point
         delete this->current_processed_atomic_counter;
         delete this->flag;
         pthread_mutex_destroy(&wait_mutex);
-        pthread_mutex_destroy(&end_map_stage_mutex);
+//        pthread_mutex_destroy(&end_map_stage_mutex);
         pthread_mutex_destroy(&state_protect_mutex);
-        pthread_mutex_destroy(&reduce_stage_mutex);
+        pthread_mutex_destroy(&reduce_current_counter_mutex);
         pthread_mutex_destroy(&emit3_mutex);
 
     }
@@ -207,8 +207,8 @@ void *map_reduce_method(void *context) {
         }
 
     }
-
     tc->job_context->barrier->barrier();
+
     //Reduce
     if(tc->thread_id ==0){
         float number_of_shuffled_items = get_size_of_vector_of_vectors(tc->job_context->shuffled_intermediate_vec);
@@ -220,11 +220,11 @@ void *map_reduce_method(void *context) {
     unsigned long shuffled_intermediate_vec_size = tc->job_context->shuffled_intermediate_vec->size();
     while (current_reduce_index < shuffled_intermediate_vec_size) {
         tc->job_context->client->reduce(tc->job_context->shuffled_intermediate_vec->at(current_reduce_index), context);
-        if(pthread_mutex_lock(&tc->job_context->reduce_stage_mutex)!=0){
+        if(pthread_mutex_lock(&tc->job_context->reduce_current_counter_mutex) != 0){
             printErr(ERR_PLOCK_PUNLOCK_INVALID_VAL);
         }
         (*(tc->job_context->current_processed_atomic_counter)).fetch_add(tc->job_context->shuffled_intermediate_vec->at(current_reduce_index)->size());
-        if(pthread_mutex_unlock(&tc->job_context->reduce_stage_mutex)!=0){
+        if(pthread_mutex_unlock(&tc->job_context->reduce_current_counter_mutex) != 0){
             printErr(ERR_PLOCK_PUNLOCK_INVALID_VAL);
         }
         current_reduce_index = (*(tc->job_context->reduce_atomic_counter))++;
@@ -241,14 +241,8 @@ int get_size_of_vector_of_vectors(std::vector<IntermediateVec *> *pVector) {
     return sum;
 }
 
-//void update_state(JobState *job_stage, stage_t stage) {
-//
-//    job_stage->stage = stage;
-//    job_stage->percentage = 0;
-//}
 void update_state(JobContext *jc, stage_t stage, float total) {
 
-    //TODO: ADD MUTEX as these are many atomic functions together
     pthread_mutex_lock(&jc->state_protect_mutex);
     if(jc->job_state->stage != stage){
         jc->job_state->stage = stage;
@@ -299,8 +293,6 @@ pop_all_max_keys(K2 *max_key, IntermediateVec *intermediateVecOutput, std::vecto
             intermediateVecOutput->push_back(vec->back());
             vec->pop_back();
             (*(tc->job_context->current_processed_atomic_counter))++;
-//            tc->job_context->job_state->percentage =
-//                    ((float) current_number_of_processed_pairs / (float) (initial_size)) * 100;
         }
     }
     //after finishing emptying every vector from max_key pairs - going over and deleting all empty vectors
