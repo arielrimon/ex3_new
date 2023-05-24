@@ -56,6 +56,7 @@ struct JobContext { // resources used by all threads - every thread hold a point
     std::atomic<int> *reduce_atomic_counter;
     std::atomic<int> *flag;
     Barrier *barrier;
+    Barrier *barrier2;
     pthread_mutex_t wait_mutex;
 //    pthread_mutex_t end_map_stage_mutex;
     pthread_mutex_t state_protect_mutex;
@@ -75,6 +76,7 @@ struct JobContext { // resources used by all threads - every thread hold a point
         this->output_vec = output_vec;
         this->job_state = job_state;
         this->barrier = new Barrier(numOfThreads);
+        this->barrier2 = new Barrier(numOfThreads);
         this->total_items_to_process = 0;
 
         // init atomic counters
@@ -100,6 +102,7 @@ struct JobContext { // resources used by all threads - every thread hold a point
         delete this->all_intermediate_vec;
         delete this->shuffled_intermediate_vec;
         delete this->barrier;
+        delete this->barrier2;
         delete this->map_atomic_counter;
         delete this->reduce_atomic_counter;
         delete this->current_processed_atomic_counter;
@@ -119,7 +122,6 @@ struct JobContext { // resources used by all threads - every thread hold a point
     bool get_flag() {
         return this->flag->load();
     }
-
 };
 
 ///------------------------------ FUNCTIONS USED -----------------------------------------
@@ -171,6 +173,15 @@ bool compare(const IntermediatePair &a, const IntermediatePair &b) {
     return *(a.first) < *(b.first);
 }
 
+bool are_all_empty(std::vector<IntermediateVec *> *all_intermediate_vec){
+    for (int i = 0; i < all_intermediate_vec->size(); ++i) {
+        if(!all_intermediate_vec->at(i)->empty()){
+            return false;
+        }
+    }
+    return true;
+}
+
 // map reduce
 void *map_reduce_method(void *context) {
     auto *tc = (ThreadContext *) context;
@@ -187,10 +198,8 @@ void *map_reduce_method(void *context) {
         current_index = (*(tc->job_context->map_atomic_counter))++;
     }
     //Sort
-//    printf("Before barriers: %d\n", tc->thread_id);
     std::sort(tc->intermediate_vec->begin(), tc->intermediate_vec->end(), compare);
     tc->job_context->barrier->barrier();
-//    printf("Between barriers: %d\n", tc->thread_id);
 
     //Shuffle
     if (tc->thread_id == 0) {
@@ -198,8 +207,7 @@ void *map_reduce_method(void *context) {
         update_state(tc->job_context, SHUFFLE_STAGE, all_intermediate_vec_size);
         std::vector<IntermediateVec *> *all_intermediate_vec = tc->job_context->all_intermediate_vec;
         std::vector<IntermediateVec *> *shuffled_vector = tc->job_context->shuffled_intermediate_vec;
-//        int current_number_of_processed_pairs = 0;
-        while (!all_intermediate_vec->empty() && !all_intermediate_vec->at(0)->empty()) {
+        while (!all_intermediate_vec->empty() && !are_all_empty(all_intermediate_vec)) {
             K2 *max_key = get_max_key(all_intermediate_vec); // gets the maximal key of all keys imn all vec
             auto * max_key_vector = new IntermediateVec ();
             pop_all_max_keys(max_key, max_key_vector, all_intermediate_vec, tc, all_intermediate_vec_size);
@@ -209,27 +217,28 @@ void *map_reduce_method(void *context) {
     }
     tc->job_context->barrier->barrier();
 
+    tc->job_context->barrier2->barrier();
+
     //Reduce
     if(tc->thread_id ==0){
         float number_of_shuffled_items = get_size_of_vector_of_vectors(tc->job_context->shuffled_intermediate_vec);
         update_state(tc->job_context, REDUCE_STAGE, number_of_shuffled_items);
     }
-    tc->job_context->barrier->barrier();
+    tc->job_context->barrier2->barrier();
 
     int current_reduce_index = (*(tc->job_context->reduce_atomic_counter))++;
     unsigned long shuffled_intermediate_vec_size = tc->job_context->shuffled_intermediate_vec->size();
     while (current_reduce_index < shuffled_intermediate_vec_size) {
         tc->job_context->client->reduce(tc->job_context->shuffled_intermediate_vec->at(current_reduce_index), context);
-        if(pthread_mutex_lock(&tc->job_context->reduce_current_counter_mutex) != 0){
+        if(pthread_mutex_lock(&tc->job_context->state_protect_mutex) != 0){
             printErr(ERR_PLOCK_PUNLOCK_INVALID_VAL);
         }
         (*(tc->job_context->current_processed_atomic_counter)).fetch_add(tc->job_context->shuffled_intermediate_vec->at(current_reduce_index)->size());
-        if(pthread_mutex_unlock(&tc->job_context->reduce_current_counter_mutex) != 0){
+        if(pthread_mutex_unlock(&tc->job_context->state_protect_mutex) != 0){
             printErr(ERR_PLOCK_PUNLOCK_INVALID_VAL);
         }
         current_reduce_index = (*(tc->job_context->reduce_atomic_counter))++;
     }
-//    printf("After barriers: %d\n", tc->thread_id);
     return tc->job_context;
 }
 
@@ -265,14 +274,15 @@ K2 *get_max_key(std::vector<IntermediateVec *> *all_vectors) {
     }
     bool is_first_iteration = true;
     for (auto vec: *all_vectors) {
-        if (is_first_iteration) {
+        if (is_first_iteration && !vec->empty()) {
             max_key = vec->back().first;
             is_first_iteration = false;
             continue;
         }
-//        max_key = std::max(max_key, vec->back().first);
-        if (!vec->empty() && *max_key < *(vec->back().first)) {
-            max_key = vec->back().first;
+        if (!is_first_iteration){
+            if (!vec->empty() && *max_key < *(vec->back().first)) {
+                max_key = vec->back().first;
+            }
         }
     }
     return max_key;
@@ -293,6 +303,8 @@ pop_all_max_keys(K2 *max_key, IntermediateVec *intermediateVecOutput, std::vecto
             intermediateVecOutput->push_back(vec->back());
             vec->pop_back();
             (*(tc->job_context->current_processed_atomic_counter))++;
+//            tc->job_context->job_state->percentage =
+//                    ((float) current_number_of_processed_pairs / (float) (initial_size)) * 100;
         }
     }
     //after finishing emptying every vector from max_key pairs - going over and deleting all empty vectors
