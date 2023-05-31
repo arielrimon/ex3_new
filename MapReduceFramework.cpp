@@ -99,6 +99,8 @@ struct JobContext { // resources used by all threads - every thread hold a point
         delete this->reduce_atomic_counter;
         delete this->current_processed_atomic_counter;
         delete this->flag;
+        free(this->job_state);
+        delete[] this->threads;
         pthread_mutex_destroy(&wait_mutex);
         pthread_mutex_destroy(&state_protect_mutex);
         pthread_mutex_destroy(&emit3_mutex);
@@ -201,6 +203,7 @@ void *map_reduce_method(void *context) {
             auto * max_key_vector = new IntermediateVec ();
             pop_all_max_keys(max_key, max_key_vector, all_intermediate_vec, tc, all_intermediate_vec_size);
             shuffled_vector->push_back(max_key_vector);
+            delete max_key_vector;
         }
 
     }
@@ -257,10 +260,7 @@ void update_state(JobContext *jc, stage_t stage, float total) {
  * @return value of the maximal key found
  */
 K2 *get_max_key(std::vector<IntermediateVec *> *all_vectors) {
-    K2 *max_key = (K2 *) malloc(sizeof(K2));
-    if(max_key== nullptr){
-        printErr(ERR_MALLOC_INVALID_VAL);
-    }
+    K2 *max_key = nullptr;
     bool is_first_iteration = true;
     for (auto vec: *all_vectors) {
         if (is_first_iteration && !vec->empty()) {
@@ -430,6 +430,7 @@ void closeJobHandle(JobHandle job) {
     for (int i = 0; i < job_context->number_of_threads; ++i) {
         delete job_context->thread_contexts[i];
     }
+    free(job_context->thread_contexts);
     // delete all job context and its sources
     delete job_context;
 }
